@@ -1,0 +1,102 @@
+import pandas as pd
+import pymysql
+
+# 엑셀 파일 읽기
+df = pd.read_excel('movie_list.xls', sheet_name=None)
+
+# 데이터 전처리
+movies_data = []
+directors_data = []
+genres_data = []
+
+for sheet in df.values():
+    for _, row in sheet.iterrows():
+        movie_title = row['영화명']
+        director_name = row['감독']
+        genres = row['장르'].split(',')
+
+        movies_data.append((movie_title, director_name))
+        directors_data.append(director_name)
+        genres_data.extend(genres)
+
+# 중복 제거
+directors_data = list(set(directors_data))
+genres_data = list(set(genres_data))
+
+connection = pymysql.connect(
+    host='localhost',
+    user='root',
+    password='password',
+    database='movie_db'
+)
+cursor = connection.cursor()
+
+# 감독 데이터 삽입
+director_id_map = {}
+for director in directors_data:
+    cursor.execute("INSERT INTO directors (name) VALUES (%s) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)", (director,))
+    director_id_map[director] = cursor.lastrowid
+
+# 장르 데이터 삽입
+genre_id_map = {}
+for genre in genres_data:
+    cursor.execute("INSERT INTO genres (name) VALUES (%s) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)", (genre,))
+    genre_id_map[genre] = cursor.lastrowid
+
+# 영화 데이터 삽입
+for movie, director in movies_data:
+    cursor.execute("INSERT INTO movies (title, director_id) VALUES (%s, %s)", (movie, director_id_map[director]))
+
+    movie_id = cursor.lastrowid
+    for genre in row['장르'].split(','):
+        cursor.execute("INSERT INTO movie_genres (movie_id, genre_id) VALUES (%s, %s)", (movie_id, genre_id_map[genre]))
+
+connection.commit()
+connection.close()
+
+from flask import Flask, request, render_template
+import pymysql
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/search', methods=['GET'])
+def search():
+    title = request.args.get('title')
+    director = request.args.get('director')
+    genre = request.args.get('genre')
+
+    query = "SELECT movies.title, directors.name, genres.name FROM movies " \
+            "JOIN directors ON movies.director_id = directors.id " \
+            "JOIN movie_genres ON movies.id = movie_genres.movie_id " \
+            "JOIN genres ON movie_genres.genre_id = genres.id WHERE 1=1"
+    
+    params = []
+    if title:
+        query += " AND movies.title LIKE %s"
+        params.append(f'%{title}%')
+    if director:
+        query += " AND directors.name LIKE %s"
+        params.append(f'%{director}%')
+    if genre:
+        query += " AND genres.name LIKE %s"
+        params.append(f'%{genre}%')
+    
+    connection = pymysql.connect(
+        host='localhost',
+        user='root',
+        password='password',
+        database='movie_db'
+    )
+    cursor = connection.cursor()
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    connection.close()
+
+    return render_template('search.html', results=results)
+
+if __name__ == '__main__':
+    app.run(debug=True)
